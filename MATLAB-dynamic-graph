@@ -45,7 +45,7 @@ ax.NextPlot = 'add';
 datetick('x','HH:MM:SS'); % format x-axis as time
 
 % Stop button
-stopBtn = uicontrol('Style','pushbutton','String','Stop','Position',[20 20 60 25],...
+stopBtn = uicontrol('Style','pushbutton','String','Stop','Position',[5 20 40 25],...
     'Callback',@(src,event) stopPython(pyProcess, fig, false));  % false = keep figure
 
 % Figure CloseRequestFcn
