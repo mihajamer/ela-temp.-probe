@@ -3,21 +3,21 @@ from bleak import BleakScanner
 from datetime import datetime
 
 # --- Configuration ---
-TARGET_ADDRESS = "D9:0D:E6:E7:86:2B"
-TEMP_UUID = "00002a6e-0000-1000-8000-00805f9b34fb"
+TARGET_ADDRESS = "D9:0D:E6:E7:86:2B" * address of the probes
+TEMP_UUID = "00002a6e-0000-1000-8000-00805f9b34fb" * TX
 
 # --- Globals ---
 battery_voltage = None
 battery_printed = False
 last_packet_time = None
 
-MIN_PACKET_GAP = 0.05  # seconds
+MIN_PACKET_GAP = 0.05  # seconds, set to ignore packets that arrive too close to each other (clones)
 
 
 def decode_voltage(m_data):
     if len(m_data) >= 3:
         voltage_mv = m_data[0] + (m_data[2] << 8)
-        return voltage_mv / 1000.0
+        return voltage_mv / 1000.0 * reads the voltage of the probe battery from the raw file
     return None
 
 
@@ -51,7 +51,7 @@ def detection_callback(device, advertisement_data):
 
         last_packet_time = now
 
-        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3] * displays  real time in hours, minutes, seconds and miliseconds
 
         if battery_voltage is not None and not battery_printed:
             print(f"[{timestamp}] {temperature:.2f} °C | Battery: {battery_voltage:.3f} V", flush=True)
