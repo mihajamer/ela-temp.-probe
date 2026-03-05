@@ -44,8 +44,13 @@ ax = gca;
 ax.NextPlot = 'add';
 datetick('x','HH:MM:SS'); % format x-axis as time
 
-% Stop button
-stopBtn = uicontrol('Style','pushbutton','String','Stop','Position',[5 20 40 25],...
+% Stop button (red)
+stopBtn = uicontrol('Style','pushbutton', ...
+    'String','Stop', ...
+    'Position',[5 20 40 25], ...
+    'BackgroundColor',[1 0 0], ...    % RGB for red
+    'ForegroundColor',[1 1 1], ...    % white text
+    'FontWeight','bold', ...           % optional: bold text
     'Callback',@(src,event) stopPython(pyProcess, fig, false));  % false = keep figure
 
 % Figure CloseRequestFcn
