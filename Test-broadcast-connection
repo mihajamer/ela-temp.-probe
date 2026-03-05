@@ -1,0 +1,46 @@
+import asyncio
+from bleak import BleakScanner
+from datetime import datetime
+
+# --- Configuration ---
+TARGET_ADDRESS = "D9:0D:E6:E7:86:2B" # address of the probe
+
+async def main():
+    scanner = None  # We'll need to stop it inside the callback
+
+    def format_bytes(data: bytes) -> str:
+        """Convert bytes to hex string."""
+        return ' '.join(f'{b:02X}' for b in data)
+
+    def detection_callback(device, advertisement_data):
+        nonlocal scanner  # Access scanner to stop it immediately
+        if device.address.upper() != TARGET_ADDRESS:
+            return
+
+        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3] # prints time of the broadcast in real time with hours, minutes, seconds and miliseconds
+        print(f"\n[{timestamp}] Raw BLE advertisement from {device.address}:")
+
+        # Device Name
+        if device.name:
+            print(f"  Device Name: {device.name}") # prints the device name thats unique to the probe, can be read on its housing
+
+        # Manufacturer Data
+        for m_id, m_data in advertisement_data.manufacturer_data.items():
+            print(f"  Manufacturer Data: ID {m_id}: {m_data} | {format_bytes(m_data)}")
+
+        # Service Data
+        for uuid, s_data in advertisement_data.service_data.items():
+            print(f"  Service Data: UUID {uuid}: {s_data} | {format_bytes(s_data)}")
+
+        # Stop scanning immediately
+        asyncio.create_task(scanner.stop())
+        print("Stopped scanning.", flush=True)
+
+    print("Scanning for probe... Waiting for first packet...", flush=True)
+    scanner = BleakScanner(detection_callback, scanning_mode="active")
+    await scanner.start()
+
+    # Wait a little so the scanner task can complete stopping
+    await asyncio.sleep(5)
+
+asyncio.run(main())
