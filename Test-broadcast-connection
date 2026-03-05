@@ -10,7 +10,7 @@ async def main():
 
     def format_bytes(data: bytes) -> str:
         """Convert bytes to hex string."""
-        return ' '.join(f'{b:02X}' for b in data)
+        return ' '.join(f'{b:02X}' for b in data) # we print the raw numbers and HEX converted ones
 
     def detection_callback(device, advertisement_data):
         nonlocal scanner  # Access scanner to stop it immediately
