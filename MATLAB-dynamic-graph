@@ -1,0 +1,145 @@
+%% --- probe_temperature_real_time.m ---
+clc; clear;
+
+%% --- Settings ---
+pythonScript = 'C:\Users\mihaj\read_probe.py';   % path to Python script
+outputFile   = 'C:\Users\mihaj\python_output.txt';  % path of the txt file that python creates
+windowStep   = 10;  % X-axis scroll step in seconds % makes the x axis get a 10 second buffer in front
+
+%% --- Kill any old Python processes ---
+system('taskkill /IM python.exe /F > NUL 2>&1'); % closes python so it doesnt run in the background
+pause(0.5);
+
+%% --- Delete old output file ---
+if exist(outputFile,'file')
+    delete(outputFile); % deletes the txt file so it doesnt store too much information
+end
+
+%% --- Close old figures (only those without CloseRequestFcn) ---
+f = findall(0,'Type','figure');
+for k = 1:length(f)
+    if isempty(f(k).CloseRequestFcn)
+        close(f(k));
+    end
+end
+
+%% --- Start Python as controllable process ---
+pyProcess = System.Diagnostics.Process;
+pyProcess.StartInfo.FileName = 'python';
+pyProcess.StartInfo.Arguments = sprintf('"%s"', pythonScript);
+pyProcess.StartInfo.RedirectStandardOutput = true;
+pyProcess.StartInfo.UseShellExecute = false;
+pyProcess.StartInfo.CreateNoWindow = true;
+pyProcess.Start();
+
+%% --- Prepare figure ---
+fig = figure('Name','Real-Time Temperature','NumberTitle','off');
+
+hLine = animatedline('LineWidth',2,'Marker','x','MarkerSize',4); % animated line to the graph is updated live
+xlabel('Time (HH:MM:SS)'); % x axis is REAL time, starts from the first recieved broadcast
+ylabel('Temperature (°C)'); % y axis changes based on maximum and minimum temperatures
+grid on;
+
+ax = gca;
+ax.NextPlot = 'add';
+datetick('x','HH:MM:SS'); % format x-axis as time
+
+% Stop button
+stopBtn = uicontrol('Style','pushbutton','String','Stop','Position',[20 20 60 25],...
+    'Callback',@(src,event) stopPython(pyProcess, fig, false));  % false = keep figure
+
+% Figure CloseRequestFcn
+set(fig,'CloseRequestFcn',@(src,event) stopPython(pyProcess, fig, true)); % true = delete figure
+
+%% --- Initialize arrays ---
+temperatures = [];
+timeStamp = [];      % store numeric datenum values for X-axis
+lastLine = 0;
+batteryDisplayed = false;
+
+%% --- Real-time plotting loop ---
+while true
+    % Stop check
+    if ~ishandle(fig) || (ishandle(fig) && isappdata(fig,'stopFlag') && getappdata(fig,'stopFlag'))
+        break;
+    end
+
+    % Read Python output
+    fid = fopen(outputFile,'r');
+    if fid ~= -1
+        lines = textscan(fid,'%s','Delimiter','\n');
+        fclose(fid);
+        lines = lines{1};
+
+        % Process only new lines
+        for i = (lastLine+1):length(lines)
+            lineStr = lines{i};
+
+            % Extract temperature
+            tempMatch = regexp(lineStr,'(\d+\.\d+)\s°C','tokens');
+            if isempty(tempMatch), continue; end
+            temp = str2double(tempMatch{1}{1});
+            temperatures(end+1,1) = temp;
+
+            % Extract timestamp from Python line
+            tsMatch = regexp(lineStr,'\[(\d{2}:\d{2}:\d{2}\.\d{3})\]','tokens');
+            if isempty(tsMatch), continue; end
+            t = datetime(tsMatch{1}{1}, 'InputFormat','HH:mm:ss.SSS');
+
+            % Convert timestamp to datenum for plotting
+            tNum = datenum(t);
+            timeStamp(end+1,1) = tNum;
+
+            % Add point to animated line
+            addpoints(hLine, tNum, temperatures(end));
+
+            % --- Display battery voltage once ---
+            if ~batteryDisplayed
+                batteryMatch = regexp(lineStr,'Battery:\s*([\d\.]+)\sV','tokens');
+                if ~isempty(batteryMatch)
+                    batteryVoltage = str2double(batteryMatch{1}{1});
+                    fprintf('Battery voltage: %.3f V\n', batteryVoltage);
+                    batteryDisplayed = true; % this prints the battery in volts, only reads it once in python
+                end
+            end
+        end
+        lastLine = length(lines);
+    end
+
+    % Dynamic Y-axis
+    if ~isempty(temperatures)
+        ylim([min(temperatures)-5, max(temperatures)+5]); % set to add 5 in both directions in the y axis based on temp, can be changed
+    end
+
+    % Dynamic X-axis scroll
+    if ~isempty(timeStamp)
+        xlim([min(timeStamp), max(timeStamp)+windowStep/86400]); % windowStep in seconds → days
+        datetick('x','HH:MM:SS','keeplimits');
+    end
+
+    drawnow('limitrate');  % smooth refresh
+    pause(0.01);
+end
+
+disp('Real-time plotting stopped, Python process terminated.');
+
+%% --- Function to stop Python and optionally close figure ---
+function stopPython(pyProcess, figHandle, closeFigure)
+    % Set stop flag so loop exits
+    if ishandle(figHandle)
+        setappdata(figHandle,'stopFlag',true);
+    end
+
+    % Kill Python if still running
+    if ~isempty(pyProcess) && isvalid(pyProcess)
+        if pyProcess.HasExited == false
+            pyProcess.Kill();
+            pause(0.2); % allow OS to release file
+        end
+    end
+
+    % Delete figure only if requested
+    if closeFigure && ishandle(figHandle)
+        delete(figHandle);
+    end
+end
