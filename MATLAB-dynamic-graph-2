@@ -1,4 +1,4 @@
-%% --- probe_temperature_real_time.m ---
+%% --- probe_temperature_real_time_final_fixed.m ---
 clc; clear;
 
 %% --- Settings ---
@@ -6,6 +6,7 @@ pythonScript = 'C:\Users\mihaj\read_probe.py';
 outputFile   = 'C:\Users\mihaj\python_output.txt';
 windowStep   = 10;    % X-axis scroll step in seconds
 maxPoints    = 5000;  % limit stored points for performance
+restartInterval = 60; % Python restart interval in seconds
 
 %% --- Kill any old Python processes ---
 system('taskkill /IM python.exe /F > NUL 2>&1');
@@ -16,11 +17,12 @@ if exist(outputFile,'file')
     delete(outputFile);
 end
 
-%% --- Close old figures ---
+%% --- Close old figures safely ---
 f = findall(0,'Type','figure');
 for k = 1:length(f)
-    if isempty(f(k).CloseRequestFcn)
-        close(f(k));
+    try
+        delete(f(k)); 
+    catch
     end
 end
 
@@ -40,11 +42,9 @@ hLine = animatedline('LineWidth',2,'Marker','x','MarkerSize',4);
 xlabel('Time (HH:MM:SS)');
 ylabel('Temperature (°C)');
 grid on;
+ax = gca; ax.NextPlot = 'add';
 
-ax = gca;
-ax.NextPlot = 'add';
-
-%% --- Live text display (top-right) ---
+%% --- Live text display ---
 figPos = fig.Position;
 infoText = uicontrol('Style','text', ...
     'Position',[figPos(3)-150 figPos(4)-80 120 70], ...
@@ -60,72 +60,85 @@ stopBtn = uicontrol('Style','pushbutton', ...
     'BackgroundColor',[1 0 0], ...
     'ForegroundColor',[1 1 1], ...
     'FontWeight','bold', ...
-    'Callback',@(src,event) stopPython(pyProcess, fig, false));
-
-set(fig,'CloseRequestFcn',@(src,event) stopPython(pyProcess, fig, true));
+    'Callback',@(src,event) setappdata(fig,'stopFlag',true));
 
 %% --- Initialize arrays ---
 temperatures = [];
 timeStamp = [];
 lastLine = 0;
 batteryDisplayed = false;
-
-%% --- Initialize variables for delta/Hz calculation ---
 prevTime = NaT;
-deltaTimes = [];  % store time differences between readings
+deltaTimes = [];
+restartTic = tic;
 
-%% --- Real-time plotting loop ---
+%% --- Main real-time loop ---
 while true
     if ~ishandle(fig) || (isappdata(fig,'stopFlag') && getappdata(fig,'stopFlag'))
         break;
     end
 
-    % Read Python output
+    %% --- Restart Python every restartInterval seconds ---
+    if toc(restartTic) > restartInterval
+        if ~isempty(pyProcess) && isvalid(pyProcess)
+            if pyProcess.HasExited == false
+                pyProcess.Kill();
+                pause(0.2);
+            end
+        end
+        pyProcess = System.Diagnostics.Process;
+        pyProcess.StartInfo.FileName = 'python';
+        pyProcess.StartInfo.Arguments = sprintf('"%s"', pythonScript);
+        pyProcess.StartInfo.RedirectStandardOutput = true;
+        pyProcess.StartInfo.UseShellExecute = false;
+        pyProcess.StartInfo.CreateNoWindow = true;
+        pyProcess.Start();
+        restartTic = tic;
+    end
+
+    %% --- Read Python output ---
     fid = fopen(outputFile,'r');
     if fid ~= -1
-        lines = textscan(fid,'%s','Delimiter','\n');
-        fclose(fid);
+        lines = textscan(fid,'%s','Delimiter','\n'); fclose(fid);
         lines = lines{1};
-
         for i = (lastLine+1):length(lines)
             lineStr = lines{i};
 
-            % Extract temperature
+            % Temperature
             tempMatch = regexp(lineStr,'(\d+\.\d+)\s°C','tokens');
             if isempty(tempMatch), continue; end
             temp = str2double(tempMatch{1}{1});
             temperatures(end+1,1) = temp;
 
-            % Extract timestamp
+            % Timestamp
             tsMatch = regexp(lineStr,'\[(\d{2}:\d{2}:\d{2}\.\d{3})\]','tokens');
             if isempty(tsMatch), continue; end
             t = datetime(tsMatch{1}{1}, 'InputFormat','HH:mm:ss.SSS');
-            tNum = datenum(t);
-            timeStamp(end+1,1) = tNum;
 
-            addpoints(hLine, tNum, temp);
+            if isempty(timeStamp)
+                tStart = t; % first reading
+            end
+            elapsed = seconds(t - tStart);
+            timeStamp(end+1,1) = elapsed;
 
-            % --- Update deltaTimes ---
+            addpoints(hLine, elapsed, temp);
+
+            % Delta / Hz
             if ~isnat(prevTime)
-                delta = seconds(t - prevTime);    % delta in seconds
+                delta = seconds(t - prevTime);
                 if delta > 0
-                    deltaTimes(end+1) = delta;   % store only positive deltas
+                    deltaTimes(end+1) = delta;
                 end
             end
             prevTime = t;
 
-            % --- Calculate display values ---
             if ~isempty(deltaTimes)
-                deltaLastMs = deltaTimes(end) * 1000;           % last delta
-                deltaAvgMs  = mean(deltaTimes) * 1000;         % average delta
-                HzAvg       = 1 / mean(deltaTimes);            % average Hz
+                deltaLastMs = deltaTimes(end)*1000;
+                deltaAvgMs  = mean(deltaTimes)*1000;
+                HzAvg       = 1/mean(deltaTimes);
             else
-                deltaLastMs = NaN;
-                deltaAvgMs  = NaN;
-                HzAvg       = NaN;
+                deltaLastMs = NaN; deltaAvgMs = NaN; HzAvg = NaN;
             end
 
-            % Update info text
             set(infoText,'String',sprintf('Temp: %.2f °C\nΔt last: %.1f ms\nΔt avg: %.1f ms\nHz avg: %.2f', ...
                 temp, deltaLastMs, deltaAvgMs, HzAvg));
 
@@ -142,7 +155,7 @@ while true
         lastLine = length(lines);
     end
 
-    % Limit stored points for performance
+    %% --- Limit points ---
     if length(temperatures) > maxPoints
         temperatures = temperatures(end-maxPoints:end);
         timeStamp = timeStamp(end-maxPoints:end);
@@ -150,35 +163,28 @@ while true
         addpoints(hLine, timeStamp, temperatures);
     end
 
-    % Dynamic Y-axis
+    %% --- Dynamic axes with start time on left ---
     if ~isempty(temperatures)
         ylim([min(temperatures)-5, max(temperatures)+5]);
     end
-
-    % Dynamic X-axis
     if ~isempty(timeStamp)
-        xlim([min(timeStamp), max(timeStamp)+windowStep/86400]);
-        datetick('x','HH:MM:SS','keeplimits');
+        xlim([0, max(timeStamp)+windowStep]);
+        xticks = linspace(0, max(timeStamp)+windowStep, 6);
+        xticklabels = cellstr(datestr(tStart + seconds(xticks),'HH:MM:SS'));
+        set(ax,'XTick',xticks,'XTickLabel',xticklabels);
     end
 
-    drawnow('limitrate');
-    pause(0.01);
+    drawnow('limitrate'); pause(0.01);
 end
 
 disp('Real-time plotting stopped.');
 
-%% --- Stop function ---
-function stopPython(pyProcess, figHandle, closeFigure)
+%% --- Nested stop/close function ---
+function closeFigure(figHandle)
+    % Stop main loop
+    setappdata(figHandle,'stopFlag',true);
+    % Close figure
     if ishandle(figHandle)
-        setappdata(figHandle,'stopFlag',true);
-    end
-    if ~isempty(pyProcess) && isvalid(pyProcess)
-        if pyProcess.HasExited == false
-            pyProcess.Kill();
-            pause(0.2);
-        end
-    end
-    if closeFigure && ishandle(figHandle)
         delete(figHandle);
     end
 end
