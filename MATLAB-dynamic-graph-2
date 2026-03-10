@@ -1,0 +1,184 @@
+%% --- probe_temperature_real_time.m ---
+clc; clear;
+
+%% --- Settings ---
+pythonScript = 'C:\Users\mihaj\read_probe.py';
+outputFile   = 'C:\Users\mihaj\python_output.txt';
+windowStep   = 10;    % X-axis scroll step in seconds
+maxPoints    = 5000;  % limit stored points for performance
+
+%% --- Kill any old Python processes ---
+system('taskkill /IM python.exe /F > NUL 2>&1');
+pause(0.5);
+
+%% --- Delete old output file ---
+if exist(outputFile,'file')
+    delete(outputFile);
+end
+
+%% --- Close old figures ---
+f = findall(0,'Type','figure');
+for k = 1:length(f)
+    if isempty(f(k).CloseRequestFcn)
+        close(f(k));
+    end
+end
+
+%% --- Start Python ---
+pyProcess = System.Diagnostics.Process;
+pyProcess.StartInfo.FileName = 'python';
+pyProcess.StartInfo.Arguments = sprintf('"%s"', pythonScript);
+pyProcess.StartInfo.RedirectStandardOutput = true;
+pyProcess.StartInfo.UseShellExecute = false;
+pyProcess.StartInfo.CreateNoWindow = true;
+pyProcess.Start();
+
+%% --- Prepare figure ---
+fig = figure('Name','Real-Time Temperature','NumberTitle','off');
+hLine = animatedline('LineWidth',2,'Marker','x','MarkerSize',4);
+
+xlabel('Time (HH:MM:SS)');
+ylabel('Temperature (°C)');
+grid on;
+
+ax = gca;
+ax.NextPlot = 'add';
+
+%% --- Live text display (top-right) ---
+figPos = fig.Position;
+infoText = uicontrol('Style','text', ...
+    'Position',[figPos(3)-150 figPos(4)-80 120 70], ...
+    'BackgroundColor',[0.9 0.9 0.9], ...
+    'FontSize',10, ...
+    'HorizontalAlignment','right', ...
+    'String',sprintf('Temp: -- °C\nΔt last: -- ms\nΔt avg: -- ms\nHz avg: --'));
+
+%% --- Stop button ---
+stopBtn = uicontrol('Style','pushbutton', ...
+    'String','Stop', ...
+    'Position',[5 5 40 25], ...
+    'BackgroundColor',[1 0 0], ...
+    'ForegroundColor',[1 1 1], ...
+    'FontWeight','bold', ...
+    'Callback',@(src,event) stopPython(pyProcess, fig, false));
+
+set(fig,'CloseRequestFcn',@(src,event) stopPython(pyProcess, fig, true));
+
+%% --- Initialize arrays ---
+temperatures = [];
+timeStamp = [];
+lastLine = 0;
+batteryDisplayed = false;
+
+%% --- Initialize variables for delta/Hz calculation ---
+prevTime = NaT;
+deltaTimes = [];  % store time differences between readings
+
+%% --- Real-time plotting loop ---
+while true
+    if ~ishandle(fig) || (isappdata(fig,'stopFlag') && getappdata(fig,'stopFlag'))
+        break;
+    end
+
+    % Read Python output
+    fid = fopen(outputFile,'r');
+    if fid ~= -1
+        lines = textscan(fid,'%s','Delimiter','\n');
+        fclose(fid);
+        lines = lines{1};
+
+        for i = (lastLine+1):length(lines)
+            lineStr = lines{i};
+
+            % Extract temperature
+            tempMatch = regexp(lineStr,'(\d+\.\d+)\s°C','tokens');
+            if isempty(tempMatch), continue; end
+            temp = str2double(tempMatch{1}{1});
+            temperatures(end+1,1) = temp;
+
+            % Extract timestamp
+            tsMatch = regexp(lineStr,'\[(\d{2}:\d{2}:\d{2}\.\d{3})\]','tokens');
+            if isempty(tsMatch), continue; end
+            t = datetime(tsMatch{1}{1}, 'InputFormat','HH:mm:ss.SSS');
+            tNum = datenum(t);
+            timeStamp(end+1,1) = tNum;
+
+            addpoints(hLine, tNum, temp);
+
+            % --- Update deltaTimes ---
+            if ~isnat(prevTime)
+                delta = seconds(t - prevTime);    % delta in seconds
+                if delta > 0
+                    deltaTimes(end+1) = delta;   % store only positive deltas
+                end
+            end
+            prevTime = t;
+
+            % --- Calculate display values ---
+            if ~isempty(deltaTimes)
+                deltaLastMs = deltaTimes(end) * 1000;           % last delta
+                deltaAvgMs  = mean(deltaTimes) * 1000;         % average delta
+                HzAvg       = 1 / mean(deltaTimes);            % average Hz
+            else
+                deltaLastMs = NaN;
+                deltaAvgMs  = NaN;
+                HzAvg       = NaN;
+            end
+
+            % Update info text
+            set(infoText,'String',sprintf('Temp: %.2f °C\nΔt last: %.1f ms\nΔt avg: %.1f ms\nHz avg: %.2f', ...
+                temp, deltaLastMs, deltaAvgMs, HzAvg));
+
+            % Display battery once
+            if ~batteryDisplayed
+                batteryMatch = regexp(lineStr,'Battery:\s*([\d\.]+)\sV','tokens');
+                if ~isempty(batteryMatch)
+                    batteryVoltage = str2double(batteryMatch{1}{1});
+                    fprintf('Battery voltage: %.3f V\n', batteryVoltage);
+                    batteryDisplayed = true;
+                end
+            end
+        end
+        lastLine = length(lines);
+    end
+
+    % Limit stored points for performance
+    if length(temperatures) > maxPoints
+        temperatures = temperatures(end-maxPoints:end);
+        timeStamp = timeStamp(end-maxPoints:end);
+        clearpoints(hLine);
+        addpoints(hLine, timeStamp, temperatures);
+    end
+
+    % Dynamic Y-axis
+    if ~isempty(temperatures)
+        ylim([min(temperatures)-5, max(temperatures)+5]);
+    end
+
+    % Dynamic X-axis
+    if ~isempty(timeStamp)
+        xlim([min(timeStamp), max(timeStamp)+windowStep/86400]);
+        datetick('x','HH:MM:SS','keeplimits');
+    end
+
+    drawnow('limitrate');
+    pause(0.01);
+end
+
+disp('Real-time plotting stopped.');
+
+%% --- Stop function ---
+function stopPython(pyProcess, figHandle, closeFigure)
+    if ishandle(figHandle)
+        setappdata(figHandle,'stopFlag',true);
+    end
+    if ~isempty(pyProcess) && isvalid(pyProcess)
+        if pyProcess.HasExited == false
+            pyProcess.Kill();
+            pause(0.2);
+        end
+    end
+    if closeFigure && ishandle(figHandle)
+        delete(figHandle);
+    end
+end
