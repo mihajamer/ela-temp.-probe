@@ -34,6 +34,8 @@ pyProcess.StartInfo.RedirectStandardOutput = true;
 pyProcess.StartInfo.UseShellExecute = false;
 pyProcess.StartInfo.CreateNoWindow = true;
 pyProcess.Start();
+% Store process handle so Stop can access it
+setappdata(0,'pyProcess',pyProcess);
 
 %% --- Prepare figure ---
 fig = figure('Name','Real-Time Temperature','NumberTitle','off');
@@ -60,7 +62,7 @@ stopBtn = uicontrol('Style','pushbutton', ...
     'BackgroundColor',[1 0 0], ...
     'ForegroundColor',[1 1 1], ...
     'FontWeight','bold', ...
-    'Callback',@(src,event) setappdata(fig,'stopFlag',true));
+    'Callback',@(src,event) stopProgram()); % calls function below
 
 %% --- Initialize arrays ---
 temperatures = [];
@@ -79,6 +81,7 @@ while true
 
     %% --- Restart Python every restartInterval seconds ---
     if toc(restartTic) > restartInterval
+        pyProcess = getappdata(0,'pyProcess'); % get latest Python handle
         if ~isempty(pyProcess) && isvalid(pyProcess)
             if pyProcess.HasExited == false
                 pyProcess.Kill();
@@ -92,6 +95,7 @@ while true
         pyProcess.StartInfo.UseShellExecute = false;
         pyProcess.StartInfo.CreateNoWindow = true;
         pyProcess.Start();
+        setappdata(0,'pyProcess',pyProcess); % update handle
         restartTic = tic;
     end
 
@@ -179,12 +183,22 @@ end
 
 disp('Real-time plotting stopped.');
 
-%% --- Nested stop/close function ---
-function closeFigure(figHandle)
-    % Stop main loop
-    setappdata(figHandle,'stopFlag',true);
-    % Close figure
-    if ishandle(figHandle)
-        delete(figHandle);
+%% --- Stop function ---
+function stopProgram()
+    % Set stop flag so loop exits
+    figs = findall(0,'Type','figure');
+    if ~isempty(figs)
+        setappdata(figs(1),'stopFlag',true);
+    end
+
+    % Kill Python process
+    pyProcess = getappdata(0,'pyProcess');
+    try
+        if ~isempty(pyProcess)
+            if pyProcess.HasExited == false
+                pyProcess.Kill();
+            end
+        end
+    catch
     end
 end
