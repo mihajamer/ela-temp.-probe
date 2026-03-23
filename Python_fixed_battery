@@ -1,0 +1,102 @@
+import asyncio
+from bleak import BleakScanner
+from datetime import datetime
+import os
+
+# --- Configuration ---
+TARGET_ADDRESS = "D9:0D:E6:E7:86:2B"  # address of the probe
+TEMP_UUID = "00002a6e-0000-1000-8000-00805f9b34fb"
+OUTPUT_FILE = r"C:\Users\mihaj\python_output.txt"
+
+# --- Globals ---
+battery_voltage = None
+battery_printed = False
+last_packet_time = None
+MIN_PACKET_GAP = 0.05  # seconds
+
+# --- File handle (kept open for performance) ---
+file_handle = open(OUTPUT_FILE, "a")
+
+# --- Functions ---
+def decode_voltage(m_data):
+    # Manufacturer data format: [flags][low byte][high byte]
+    if len(m_data) >= 3:
+        voltage_mv = int.from_bytes(m_data[1:3], byteorder="little")
+        return voltage_mv / 1000.0
+    return None
+
+def write_line(line):
+    file_handle.write(line + "\n")
+    file_handle.flush()
+
+def detection_callback(device, advertisement_data):
+    global battery_voltage, battery_printed, last_packet_time
+
+    if device.address.upper() != TARGET_ADDRESS:
+        return
+
+    try:
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+
+        # --- Battery (read once) ---
+        if battery_voltage is None and advertisement_data.manufacturer_data:
+            for m_id, m_data in advertisement_data.manufacturer_data.items():
+                if m_id == 1879:
+                    voltage = decode_voltage(m_data)
+                    if voltage:
+                        battery_voltage = voltage
+                        break
+
+        # --- Temperature ---
+        if TEMP_UUID in advertisement_data.service_data:
+            raw = advertisement_data.service_data[TEMP_UUID]
+
+            if len(raw) < 2:
+                return
+
+            temperature = (raw[1] << 8 | raw[0]) * 0.01
+
+            # --- Duplicate filter ---
+            if last_packet_time is not None and (now - last_packet_time) < MIN_PACKET_GAP:
+                return
+            last_packet_time = now
+
+            timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+
+            # --- Print battery once ---
+            if battery_voltage is not None and not battery_printed:
+                line = f"[{timestamp}] {temperature:.2f} °C | Battery: {battery_voltage:.3f} V"
+                battery_printed = True
+            else:
+                line = f"[{timestamp}] {temperature:.2f} °C"
+
+            print(line, flush=True)
+            write_line(line)
+
+    except Exception as e:
+        print(f"Error: {e}")
+
+# --- Main ---
+async def main():
+    print("Scanning for BLUE PUCK T... Press Ctrl+C to stop.", flush=True)
+    scanner = BleakScanner(detection_callback, scanning_mode="active")
+    await scanner.start()
+
+    try:
+        while True:
+            await asyncio.sleep(1)
+    finally:
+        await scanner.stop()
+        file_handle.close()
+        print("Stopped scanning.", flush=True)
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nProgram stopped.")
+    finally:
+        if not file_handle.closed:
+            file_handle.close()
+        print("Exiting, all files closed.")
